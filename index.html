@@ -281,7 +281,7 @@ function fillSelect(el, values, current) {
   el.innerHTML = values.map(v => `<option${v === current ? " selected" : ""}>${v}</option>`).join("");
 }
 function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&", "<": "<", ">": ">", '"': """, "'": "&#39;" }[c]));
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function parseGs1(code) {
   const body = String(code || "").replace(/[()]/g, "");
