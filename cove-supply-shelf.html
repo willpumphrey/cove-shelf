@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1c3d40">
+<title>Cove supply shelf</title>
+<script src="html5-qrcode.min.js"></script>
+<style>
+  :root {
+    --ink: #1c2b2c;
+    --muted: #5d6f70;
+    --line: #d7e0df;
+    --paper: #f4f7f6;
+    --card: #ffffff;
+    --cove: #1c3d40;
+    --cove-2: #2f6f73;
+    --sand: #e7efe9;
+    --warn: #8a5a12;
+    --warn-bg: #fff4df;
+    --bad: #8d2f2f;
+    --bad-bg: #fdecec;
+    --ok: #1f6b45;
+    --ok-bg: #e7f6ee;
+    --shadow: 0 8px 24px rgba(28, 61, 64, 0.08);
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    min-height: 100vh;
+    padding-bottom: 92px;
+    -webkit-text-size-adjust: 100%;
+  }
+  header { background: var(--cove); color: #f3f7f6; padding: 18px 18px 16px; }
+  header h1 { margin: 0; font-size: 1.25rem; font-weight: 650; letter-spacing: -0.02em; }
+  header p { margin: 4px 0 0; color: #c5d6d6; font-size: 0.86rem; }
+  .counts { display: flex; gap: 8px; margin-top: 14px; }
+  .count {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    padding: 8px 10px;
+    min-width: 88px;
+  }
+  .count b { display: block; font-size: 1.15rem; }
+  .count span { font-size: 0.72rem; color: #c5d6d6; }
+  main { padding: 14px; max-width: 760px; margin: 0 auto; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+  input, select, textarea, button { font: inherit; }
+  input[type="search"], input[type="text"], input[type="number"], input[type="date"], select, textarea {
+    width: 100%;
+    border: 1px solid var(--line);
+    background: white;
+    border-radius: 12px;
+    padding: 12px;
+    color: var(--ink);
+    font-size: 16px;
+  }
+  textarea { min-height: 72px; resize: vertical; }
+  label { display: block; font-size: 0.78rem; color: var(--muted); margin: 10px 0 4px; }
+  .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px; margin-bottom: 10px; }
+  .item { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: start; }
+  .item h2 { margin: 0 0 4px; font-size: 1.02rem; }
+  .meta { color: var(--muted); font-size: 0.84rem; line-height: 1.4; }
+  .badge { display: inline-block; border-radius: 999px; padding: 3px 8px; font-size: 0.72rem; font-weight: 650; }
+  .badge.expired { background: var(--bad-bg); color: var(--bad); }
+  .badge.soon { background: var(--warn-bg); color: var(--warn); }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.none { background: var(--sand); color: var(--muted); }
+  .row-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  button { border: 0; border-radius: 12px; padding: 12px 14px; background: var(--cove); color: white; cursor: pointer; }
+  button.secondary { background: var(--sand); color: var(--cove); }
+  button.ghost { background: transparent; color: var(--cove-2); border: 1px solid var(--line); }
+  button.warn { background: var(--bad); }
+  .nav {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    background: rgba(255,255,255,0.96);
+    border-top: 1px solid var(--line);
+  }
+  .nav button { background: transparent; color: var(--muted); padding: 8px 4px; font-size: 0.78rem; }
+  .nav button.active { color: var(--cove); font-weight: 700; }
+  .hidden { display: none !important; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  #reader { border-radius: 14px; overflow: hidden; background: #102426; }
+  #reader video { width: 100% !important; }
+  .hint { color: var(--muted); font-size: 0.82rem; line-height: 1.45; }
+  .empty { text-align: center; color: var(--muted); padding: 28px 10px; }
+  .match { background: #f3faf6; border: 1px solid #cfe3d8; border-radius: 12px; padding: 10px; margin-top: 8px; }
+  .filters { display: flex; gap: 8px; margin-bottom: 10px; }
+  .filters select { flex: 1; }
+  .file-btn { display: inline-block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cove supply shelf</h1>
+  <p>Clinic supplies only. Not medications. Stored in this Safari only.</p>
+  <div class="counts">
+    <div class="count"><b id="nExpired">0</b><span>Expired</span></div>
+    <div class="count"><b id="nSoon">0</b><span>Inside window</span></div>
+    <div class="count"><b id="nOk">0</b><span>Dated and OK</span></div>
+  </div>
+</header>
+<main>
+  <section id="view-list">
+    <div class="toolbar">
+      <input id="q" type="search" placeholder="Search name, barcode, or lot" aria-label="Search" enterkeyhint="search">
+    </div>
+    <div class="filters">
+      <select id="filterCat" aria-label="Category"></select>
+      <select id="filterStatus" aria-label="Status">
+        <option value="all">All dates</option>
+        <option value="attention">Expired or soon</option>
+        <option value="expired">Expired</option>
+        <option value="soon">Inside window</option>
+        <option value="nodate">No date yet</option>
+      </select>
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <section id="view-add" class="hidden">
+    <div class="card">
+      <div class="row-actions">
+        <button id="scanPhoto" type="button">Scan with camera</button>
+        <button id="startLive" type="button" class="secondary">Live scan</button>
+        <button id="stopLive" type="button" class="ghost hidden">Stop live</button>
+      </div>
+      <input id="cameraShot" class="hidden" type="file" accept="image/*" capture="environment">
+      <div id="reader" class="hidden"></div>
+      <p class="hint" id="scanStatus">On iPhone, Scan with camera opens the normal camera, takes one photo of the barcode, and reads it. Live scan is the backup. If either misses, type the numbers under the bars. Expiration is still read off the box unless the code itself contains it.</p>
+      <form id="form">
+        <label for="barcode">Barcode</label>
+        <input id="barcode" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="Scan or type">
+        <div id="known" class="match hidden"></div>
+        <label for="name">Name</label>
+        <input id="name" type="text" required placeholder="COVID antigen test, alcohol, sutures">
+        <label for="category">Category</label>
+        <select id="category"></select>
+        <div class="split">
+          <div>
+            <label for="lot">Lot <span style="font-weight:400">(optional)</span></label>
+            <input id="lot" type="text" autocomplete="off" autocapitalize="characters">
+          </div>
+          <div>
+            <label for="expires">Expiration</label>
+            <input id="expires" type="date">
+          </div>
+        </div>
+        <div class="split">
+          <div>
+            <label for="qty">Quantity</label>
+            <input id="qty" type="number" min="0" step="1" value="1" required>
+          </div>
+          <div>
+            <label for="unit">Unit</label>
+            <select id="unit">
+              <option>boxes</option>
+              <option>tests</option>
+              <option>bottles</option>
+              <option>packs</option>
+              <option>each</option>
+              <option>sutures</option>
+              <option>blades</option>
+            </select>
+          </div>
+        </div>
+        <label for="notes">Note</label>
+        <textarea id="notes" placeholder="Opened date, kit controls, size"></textarea>
+        <div class="row-actions">
+          <button type="submit" id="saveBtn">Save item</button>
+          <button type="button" id="clearForm" class="secondary">Clear</button>
+        </div>
+        <p class="hint">Same barcode with the same lot and expiration adds to quantity. A different lot or date becomes its own row. Medications and controlled substances stay in AtlasMD, not here.</p>
+      </form>
+    </div>
+  </section>
+
+  <section id="view-alerts" class="hidden">
+    <div class="card">
+      <label for="warnDays">Warn me this many days before expiration</label>
+      <select id="warnDays">
+        <option value="30">30 days</option>
+        <option value="60">60 days</option>
+        <option value="90">90 days</option>
+      </select>
+      <p class="hint">Warnings appear only when this page is open. Nothing is texted or emailed.</p>
+    </div>
+    <div id="alertList"></div>
+  </section>
+
+  <section id="view-data" class="hidden">
+    <div class="card">
+      <p class="hint" id="storageNote"></p>
+      <div class="row-actions">
+        <button id="exportJson" type="button">Export JSON</button>
+        <button id="exportCsv" type="button" class="secondary">Export CSV</button>
+      </div>
+      <label for="importFile">Import a JSON backup</label>
+      <input id="importFile" type="file" accept="application/json,.json">
+      <div class="row-actions">
+        <button id="wipe" type="button" class="warn">Erase this Safari’s shelf</button>
+      </div>
+    </div>
+  </section>
+</main>
+<nav class="nav">
+  <button type="button" data-view="list" class="active">Shelf</button>
+  <button type="button" data-view="add">Add</button>
+  <button type="button" data-view="alerts">Alerts</button>
+  <button type="button" data-view="data">Backup</button>
+</nav>
+<script>
+const CATEGORIES = ["POC tests", "Dressings", "Antiseptics", "Sutures", "Procedure supplies", "Other"];
+const KEY = "cove-supply-shelf-v1";
+const FORMATS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const state = load();
+let editingId = null;
+let html5 = null;
+let liveOn = false;
+
+function load() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEY) || "{}");
+    return {
+      items: Array.isArray(raw.items) ? raw.items : [],
+      warnDays: [30, 60, 90].includes(raw.warnDays) ? raw.warnDays : 30
+    };
+  } catch (e) {
+    return { items: [], warnDays: 30 };
+  }
+}
+function save() {
+  localStorage.setItem(KEY, JSON.stringify(state));
+  render();
+}
+function uid() {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+}
+function todayISO() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+function parseDate(iso) {
+  if (!iso) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+function daysUntil(iso) {
+  const dt = parseDate(iso);
+  if (!dt) return null;
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((dt - start) / 86400000);
+}
+function statusOf(item) {
+  const days = daysUntil(item.expires);
+  if (days === null) return "none";
+  if (days < 0) return "expired";
+  if (days <= state.warnDays) return "soon";
+  return "ok";
+}
+function statusLabel(item) {
+  const s = statusOf(item);
+  const days = daysUntil(item.expires);
+  if (s === "none") return "No date";
+  if (s === "expired") return "Expired " + Math.abs(days) + "d";
+  if (s === "soon") return days === 0 ? "Expires today" : "In " + days + "d";
+  return item.expires;
+}
+function fillSelect(el, values, current) {
+  el.innerHTML = values.map(v => `<option${v === current ? " selected" : ""}>${v}</option>`).join("");
+}
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&", "<": "<", ">": ">", '"': """, "'": "&#39;" }[c]));
+}
+function parseGs1(code) {
+  const body = String(code || "").replace(/[()]/g, "");
+  const out = {};
+  if (!(body.startsWith("01") && body.length >= 16)) return out;
+  out.gtin = body.slice(2, 16);
+  let i = 16;
+  while (i + 2 <= body.length) {
+    const ai = body.slice(i, i + 2);
+    if (ai === "17" && i + 8 <= body.length) {
+      const yymmdd = body.slice(i + 2, i + 8);
+      const yy = Number(yymmdd.slice(0, 2));
+      const year = yy >= 80 ? 1900 + yy : 2000 + yy;
+      out.expires = year + "-" + yymmdd.slice(2, 4) + "-" + yymmdd.slice(4, 6);
+      i += 8;
+    } else if (ai === "10") {
+      out.lot = body.slice(i + 2);
+      break;
+    } else break;
+  }
+  return out;
+}
+function knownByBarcode(code) {
+  return state.items.filter(it => it.barcode && it.barcode === code);
+}
+function renderItem(item) {
+  const s = statusOf(item);
+  return `<article class="card item" data-id="${item.id}">
+    <div>
+      <h2>${escapeHtml(item.name)}</h2>
+      <div class="meta">${escapeHtml(item.qty)} ${escapeHtml(item.unit)} · ${escapeHtml(item.category)}<br>
+        ${item.lot ? "Lot " + escapeHtml(item.lot) + " · " : ""}${item.barcode ? escapeHtml(item.barcode) : "No barcode"}
+        ${item.notes ? "<br>" + escapeHtml(item.notes) : ""}</div>
+      <div class="row-actions">
+        <button type="button" class="secondary" data-act="use">Use 1</button>
+        <button type="button" class="ghost" data-act="edit">Edit</button>
+        <button type="button" class="ghost" data-act="del">Remove</button>
+      </div>
+    </div>
+    <div><span class="badge ${s}">${escapeHtml(statusLabel(item))}</span></div>
+  </article>`;
+}
+function sorted(items) {
+  return items.slice().sort((a, b) => {
+    const da = a.expires || "9999-99-99";
+    const db = b.expires || "9999-99-99";
+    if (da !== db) return da < db ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+function render() {
+  document.getElementById("nExpired").textContent = state.items.filter(i => statusOf(i) === "expired").length;
+  document.getElementById("nSoon").textContent = state.items.filter(i => statusOf(i) === "soon").length;
+  document.getElementById("nOk").textContent = state.items.filter(i => statusOf(i) === "ok").length;
+  document.getElementById("warnDays").value = String(state.warnDays);
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const cat = document.getElementById("filterCat").value;
+  const st = document.getElementById("filterStatus").value;
+  const items = state.items.filter(i => {
+    const blob = `${i.name} ${i.barcode} ${i.lot} ${i.notes}`.toLowerCase();
+    if (q && !blob.includes(q)) return false;
+    if (cat && cat !== "All categories" && i.category !== cat) return false;
+    const s = statusOf(i);
+    if (st === "attention" && s !== "expired" && s !== "soon") return false;
+    if (st === "expired" && s !== "expired") return false;
+    if (st === "soon" && s !== "soon") return false;
+    if (st === "nodate" && s !== "none") return false;
+    return true;
+  });
+  document.getElementById("list").innerHTML = items.length
+    ? sorted(items).map(renderItem).join("")
+    : `<div class="empty">Nothing on the shelf yet.</div>`;
+  const alerts = sorted(state.items.filter(i => ["expired", "soon", "none"].includes(statusOf(i))));
+  document.getElementById("alertList").innerHTML = alerts.length
+    ? alerts.map(renderItem).join("")
+    : `<div class="empty">Nothing expired, inside the ${state.warnDays}-day window, or missing a date.</div>`;
+}
+function show(view) {
+  ["list", "add", "alerts", "data"].forEach(v => {
+    document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
+  });
+  document.querySelectorAll(".nav button").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  if (view !== "add") stopLive();
+}
+function formEls() {
+  return ["barcode", "name", "category", "lot", "expires", "qty", "unit", "notes"].reduce((o, id) => {
+    o[id] = document.getElementById(id);
+    return o;
+  }, {});
+}
+function clearForm() {
+  editingId = null;
+  const f = formEls();
+  f.barcode.value = "";
+  f.name.value = "";
+  f.lot.value = "";
+  f.expires.value = "";
+  f.qty.value = "1";
+  f.notes.value = "";
+  f.category.value = CATEGORIES[0];
+  f.unit.value = "boxes";
+  document.getElementById("saveBtn").textContent = "Save item";
+  document.getElementById("known").classList.add("hidden");
+}
+function editItem(id) {
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+  editingId = id;
+  show("add");
+  const f = formEls();
+  f.barcode.value = item.barcode || "";
+  f.name.value = item.name || "";
+  f.category.value = item.category || CATEGORIES[0];
+  f.lot.value = item.lot || "";
+  f.expires.value = item.expires || "";
+  f.qty.value = item.qty ?? 1;
+  f.unit.value = item.unit || "each";
+  f.notes.value = item.notes || "";
+  document.getElementById("saveBtn").textContent = "Update item";
+  showKnown(item.barcode);
+}
+function showKnown(code) {
+  const box = document.getElementById("known");
+  const hits = knownByBarcode(code).filter(i => i.id !== editingId);
+  if (!code || !hits.length) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  box.innerHTML = `<strong>Already on the shelf:</strong> ${escapeHtml([...new Set(hits.map(h => h.name))].join(", "))}. Same lot and expiration adds quantity.`;
+  if (!editingId && hits[0]) {
+    const f = formEls();
+    if (!f.name.value) f.name.value = hits[0].name;
+    if (hits[0].category) f.category.value = hits[0].category;
+    if (hits[0].unit) f.unit.value = hits[0].unit;
+  }
+}
+function scanner() {
+  if (!window.Html5Qrcode) return null;
+  if (!html5) html5 = new Html5Qrcode("reader", { formatsToSupport: FORMATS, verbose: false });
+  return html5;
+}
+function applyCode(raw) {
+  const f = formEls();
+  const gs1 = parseGs1(raw);
+  f.barcode.value = gs1.gtin || raw;
+  if (gs1.expires && !f.expires.value) f.expires.value = gs1.expires;
+  if (gs1.lot && !f.lot.value) f.lot.value = gs1.lot;
+  showKnown(f.barcode.value);
+  document.getElementById("scanStatus").textContent = "Read " + f.barcode.value + (gs1.expires ? ". Expiry came from the barcode." : ". Enter the expiration printed on the box.");
+}
+async function stopLive() {
+  liveOn = false;
+  document.getElementById("reader").classList.add("hidden");
+  document.getElementById("stopLive").classList.add("hidden");
+  if (html5 && html5.isScanning) {
+    try { await html5.stop(); } catch (e) {}
+  }
+}
+async function startLive() {
+  const status = document.getElementById("scanStatus");
+  const engine = scanner();
+  if (!engine) {
+    status.textContent = "Barcode reader did not load. Keep html5-qrcode.min.js in the same folder as this page, or type the code.";
+    return;
+  }
+  document.getElementById("reader").classList.remove("hidden");
+  document.getElementById("stopLive").classList.remove("hidden");
+  try {
+    await engine.start(
+      { facingMode: "environment" },
+      { fps: 8, qrbox: { width: 260, height: 140 }, aspectRatio: 1.777 },
+      (text) => { applyCode(text); stopLive(); },
+      () => {}
+    );
+    liveOn = true;
+    status.textContent = "Hold the barcode steady in the box. Safari needs this page served over https, not opened from Files.";
+    if (engine.applyVideoConstraints) {
+      setTimeout(() => {
+        engine.applyVideoConstraints({ focusMode: "continuous", advanced: [{ zoom: 2 }] }).catch(() => {});
+      }, 700);
+    }
+  } catch (err) {
+    status.textContent = "Live camera was blocked. Use Scan with camera, or type the numbers. iPhone only allows the camera on an https page, after you tap Allow.";
+    document.getElementById("reader").classList.add("hidden");
+    document.getElementById("stopLive").classList.add("hidden");
+  }
+}
+async function scanPhotoFile(file) {
+  const status = document.getElementById("scanStatus");
+  const engine = scanner();
+  if (!engine) {
+    status.textContent = "Barcode reader did not load. Put html5-qrcode.min.js next to this page, or type the code.";
+    return;
+  }
+  if (liveOn) await stopLive();
+  status.textContent = "Reading the photo…";
+  try {
+    const text = await engine.scanFile(file, false);
+    applyCode(text);
+  } catch (err) {
+    status.textContent = "Could not read that photo. Fill the frame with the barcode, avoid glare, and try again — or type the numbers.";
+  }
+}
+function upsertFromForm(ev) {
+  ev.preventDefault();
+  const f = formEls();
+  const item = {
+    barcode: f.barcode.value.trim(),
+    name: f.name.value.trim(),
+    category: f.category.value,
+    lot: f.lot.value.trim(),
+    expires: f.expires.value,
+    qty: Math.max(0, Number(f.qty.value || 0)),
+    unit: f.unit.value,
+    notes: f.notes.value.trim()
+  };
+  if (!item.name) return;
+  if (editingId) {
+    const existing = state.items.find(i => i.id === editingId);
+    if (existing) Object.assign(existing, item);
+  } else {
+    const match = state.items.find(i => i.barcode && i.barcode === item.barcode && (i.lot || "") === item.lot && (i.expires || "") === item.expires && i.name === item.name);
+    if (match) {
+      match.qty += item.qty;
+      if (item.notes) match.notes = item.notes;
+    } else {
+      state.items.push({ id: uid(), added: todayISO(), ...item });
+    }
+  }
+  save();
+  clearForm();
+  show("list");
+}
+function download(filename, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function toCsv(items) {
+  const cols = ["name", "category", "qty", "unit", "expires", "lot", "barcode", "notes", "added"];
+  const lines = [cols.join(",")];
+  items.forEach(i => lines.push(cols.map(c => `"${String(i[c] ?? "").replace(/"/g, '""')}"`).join(",")));
+  return lines.join("\n");
+}
+function storageText() {
+  let where = "this Safari on this iPhone";
+  try { where = location.origin && location.origin !== "null" ? location.origin : "this page in Safari"; } catch (e) {}
+  return "The shelf is in Safari’s local storage for " + where + ", under the key cove-supply-shelf-v1. It is not in iCloud, AtlasMD, Google Drive, or any other phone. It stays after you close the tab. It disappears if you clear website data for this site, use Private Browsing, or open the page from a different address. Export JSON is the backup.";
+}
+
+document.getElementById("form").addEventListener("submit", upsertFromForm);
+document.getElementById("clearForm").addEventListener("click", clearForm);
+document.getElementById("scanPhoto").addEventListener("click", () => document.getElementById("cameraShot").click());
+document.getElementById("cameraShot").addEventListener("change", e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (file) scanPhotoFile(file);
+});
+document.getElementById("startLive").addEventListener("click", startLive);
+document.getElementById("stopLive").addEventListener("click", stopLive);
+document.getElementById("barcode").addEventListener("change", e => {
+  const gs1 = parseGs1(e.target.value);
+  if (gs1.expires && !document.getElementById("expires").value) document.getElementById("expires").value = gs1.expires;
+  if (gs1.lot && !document.getElementById("lot").value) document.getElementById("lot").value = gs1.lot;
+  if (gs1.gtin) e.target.value = gs1.gtin;
+  showKnown(e.target.value.trim());
+});
+document.getElementById("q").addEventListener("input", render);
+document.getElementById("filterCat").addEventListener("change", render);
+document.getElementById("filterStatus").addEventListener("change", render);
+document.getElementById("warnDays").addEventListener("change", e => { state.warnDays = Number(e.target.value); save(); });
+document.querySelectorAll(".nav button").forEach(b => b.addEventListener("click", () => show(b.dataset.view)));
+document.body.addEventListener("click", e => {
+  const btn = e.target.closest("[data-act]");
+  if (!btn) return;
+  const id = btn.closest("[data-id]").dataset.id;
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+  if (btn.dataset.act === "use") {
+    item.qty = Math.max(0, Number(item.qty) - 1);
+    if (item.qty === 0 && confirm("Quantity is zero. Remove " + item.name + "?")) {
+      state.items = state.items.filter(i => i.id !== id);
+    }
+    save();
+  } else if (btn.dataset.act === "del") {
+    if (confirm("Remove " + item.name + "?")) {
+      state.items = state.items.filter(i => i.id !== id);
+      save();
+    }
+  } else if (btn.dataset.act === "edit") editItem(id);
+});
+document.getElementById("exportJson").addEventListener("click", () => download("cove-supply-shelf.json", JSON.stringify(state, null, 2), "application/json"));
+document.getElementById("exportCsv").addEventListener("click", () => download("cove-supply-shelf.csv", toCsv(sorted(state.items)), "text/csv"));
+document.getElementById("importFile").addEventListener("change", async e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    const incoming = JSON.parse(await file.text());
+    const items = Array.isArray(incoming) ? incoming : incoming.items;
+    if (!Array.isArray(items)) throw new Error("no items");
+    const replace = confirm("Replace the current shelf with this backup? Cancel merges instead.");
+    const cleaned = items.filter(i => i && i.name).map(i => ({
+      id: i.id || uid(),
+      name: String(i.name),
+      category: CATEGORIES.includes(i.category) ? i.category : "Other",
+      qty: Number(i.qty || 0),
+      unit: i.unit || "each",
+      expires: i.expires || "",
+      lot: i.lot || "",
+      barcode: i.barcode || "",
+      notes: i.notes || "",
+      added: i.added || todayISO()
+    }));
+    state.items = replace ? cleaned : state.items.concat(cleaned);
+    if (incoming.warnDays) state.warnDays = incoming.warnDays;
+    save();
+  } catch (err) {
+    alert("That file is not a shelf backup.");
+  }
+  e.target.value = "";
+});
+document.getElementById("wipe").addEventListener("click", () => {
+  if (confirm("Erase every supply stored in this Safari? Export first if you want a backup.")) {
+    state.items = [];
+    save();
+  }
+});
+fillSelect(document.getElementById("category"), CATEGORIES, CATEGORIES[0]);
+fillSelect(document.getElementById("filterCat"), ["All categories", ...CATEGORIES], "All categories");
+document.getElementById("storageNote").textContent = storageText();
+if (!window.Html5Qrcode) {
+  document.getElementById("scanStatus").textContent = "Reader file missing. Keep html5-qrcode.min.js in the same folder, then reload. Typing a barcode still works.";
+}
+render();
+</script>
+</body>
+</html>
