@@ -259,7 +259,7 @@
   <button type="button" data-view="data">Backup</button>
 </nav>
 <script>
-const CATEGORIES = ["POC tests", "Dressings", "Antiseptics", "Sutures", "Procedure supplies", "Other"];
+const CATEGORIES = ["POC tests", "Dressings", "Antiseptics", "Sutures", "Procedure supplies", "Procedure meds", "Other"];
 const KEY = "cove-supply-shelf-v1";
 const FORMATS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const state = load();
@@ -892,8 +892,10 @@ function findHeader(rows) {
 const SUPPLY_WORDS = /\b(syringe|needle|glove|gauze|sponge|dressing|bandage|tape|container|cover|curette|swab|test|kit|strip|cassette|specimen|cup|speculum|depressor|applicator|pad|blade|scalpel|suture|drape|tray|lancet|cuvette|probe|tube|collection|catheter|mask|gown|liner|paper|wipe|towel|bag|band|splint|sharps|thermometer)s?\b/i;
 const DRUG_WORDS = /(\d+(\.\d+)?\s*(mg|mcg|meq|g\/|mg\/ml|units?\/ml|iu)\b|\b(tablet|tab|capsule|cap|injection|inj|injectable|vial|ampule|suspension|syrup|elixir|ointment|cream|lotion|inhaler|inhalation|nebuliz|vaccine|ophthalmic|otic|suppositor|lidocaine|ceftriaxone|kenalog|triamcinolone|toradol|ketorolac|dexamethasone|methylprednisolone|depo|epinephrine|amoxicillin|ondansetron|promethazine|prednisone|insulin|heparin)\b)/i;
 const FEE_WORDS = /\b(freight|surcharge|handling|shipping|fuel|delivery charge|restock(ing)? fee|small order|tax|credit|discount|rebate)\b/i;
+const PROCEDURE_MEDS = /\b(acetaminophen|ibuprofen|albuterol|lidocaine|tetracaine|fluorescein|silver nitrate)\b/i;
 function guessCategory(desc) {
   const d = String(desc || "");
+  if (PROCEDURE_MEDS.test(d)) return "Procedure meds";
   if (/\b(gauze|dressing|bandage|sponge|non-?adherent|telfa|band-?aid|adhesive strip|wound)/i.test(d)) return "Dressings";
   if (/\b(suture|staple|skin closure|steri-?strip)/i.test(d)) return "Sutures";
   if (/\b(test|strep|flu|influenza|covid|sars|rsv|mono|urinalysis|ua|urine|reagent|glucose|a1c|hcg|pregnancy|lancet|cuvette|hemoglobin|control)\b/i.test(d)) return "POC tests";
@@ -921,8 +923,11 @@ function classifyLine(row, m) {
   line.category = guessCategory(desc);
   line.key = [line.invoice || line.order, line.lineNo, line.mck || desc].join("|");
   const all = [desc, line.mfrNo, line.mfrName].join(" ");
+  const procedureMed = PROCEDURE_MEDS.test(desc);
+  if (procedureMed) line.category = "Procedure meds";
   if (!desc && !line.mck) line.skip = "blank line";
   else if (FEE_WORDS.test(all) && !SUPPLY_WORDS.test(desc)) line.skip = "fee or charge, not a stock item";
+  else if (procedureMed) line.notesHint = "In-office procedure use, not dispensed.";
   else if (/pharm|drug|\brx\b|medication|vaccine|biolog/i.test(line.cat)) line.skip = "pharmacy category: medications stay in AtlasMD / Dispensary";
   else if (line.ndc && !SUPPLY_WORDS.test(desc)) line.skip = "has an NDC: medications stay in AtlasMD / Dispensary";
   else if (DRUG_WORDS.test(desc) && !SUPPLY_WORDS.test(desc)) line.skip = "looks like a medication: those stay in AtlasMD / Dispensary";
