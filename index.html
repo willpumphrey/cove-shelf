@@ -230,12 +230,19 @@ let liveOn = false;
 function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || "{}");
-    return {
+    const st = {
       items: Array.isArray(raw.items) ? raw.items : [],
-      warnDays: [30, 60, 90].includes(raw.warnDays) ? raw.warnDays : 30
+      warnDays: [30, 60, 90].includes(raw.warnDays) ? raw.warnDays : 30,
+      catalog: raw.catalog && typeof raw.catalog === "object" ? raw.catalog : {}
     };
+    // Backfill the name memory from anything already on the shelf.
+    st.items.forEach(i => {
+      const k = codeKey(i.barcode);
+      if (k && i.name && !st.catalog[k]) st.catalog[k] = { name: i.name, category: i.category, unit: i.unit };
+    });
+    return st;
   } catch (e) {
-    return { items: [], warnDays: 30 };
+    return { items: [], warnDays: 30, catalog: {} };
   }
 }
 function save() {
@@ -283,29 +290,101 @@ function fillSelect(el, values, current) {
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-function parseGs1(code) {
-  const body = String(code || "").replace(/[()]/g, "");
-  const out = {};
-  if (!(body.startsWith("01") && body.length >= 16)) return out;
-  out.gtin = body.slice(2, 16);
-  let i = 16;
-  while (i + 2 <= body.length) {
-    const ai = body.slice(i, i + 2);
-    if (ai === "17" && i + 8 <= body.length) {
-      const yymmdd = body.slice(i + 2, i + 8);
-      const yy = Number(yymmdd.slice(0, 2));
-      const year = yy >= 80 ? 1900 + yy : 2000 + yy;
-      out.expires = year + "-" + yymmdd.slice(2, 4) + "-" + yymmdd.slice(4, 6);
-      i += 8;
-    } else if (ai === "10") {
-      out.lot = body.slice(i + 2);
-      break;
-    } else break;
+// ---- GS1 / barcode parsing -------------------------------------------------
+// Handles (01)…(17)…(10)… bracketed text, raw FNC1/GS-separated data (what the
+// camera returns for GS1 DataMatrix / GS1-128), ]d2 ]C1 ]Q3 symbology prefixes,
+// and plain UPC / EAN / Code 128 values.
+const GS = "\x1d";
+const AI_FIXED = { "00": 18, "01": 14, "02": 14, "11": 6, "12": 6, "13": 6, "15": 6, "16": 6, "17": 6, "20": 2 };
+const AI_VAR = { "10": 20, "21": 20, "22": 20, "30": 8, "37": 8, "240": 30, "241": 30, "250": 30, "251": 30, "400": 30 };
+function gtinValid(d) {
+  if (!/^\d{8}$|^\d{12,14}$/.test(d)) return false;
+  let sum = 0;
+  const body = d.slice(0, -1);
+  for (let i = 0; i < body.length; i++) sum += Number(body[body.length - 1 - i]) * (i % 2 === 0 ? 3 : 1);
+  return (10 - (sum % 10)) % 10 === Number(d.slice(-1));
+}
+function gtin14(code) {
+  const d = String(code || "").trim();
+  return /^\d{8}$|^\d{12,14}$/.test(d) && gtinValid(d) ? d.padStart(14, "0") : "";
+}
+function codeKey(code) {
+  const c = String(code || "").trim();
+  return c ? (gtin14(c) || c) : "";
+}
+function gs1Date(v) {
+  if (!/^\d{6}$/.test(v)) return "";
+  const yy = Number(v.slice(0, 2)), mm = Number(v.slice(2, 4));
+  let dd = Number(v.slice(4, 6));
+  if (mm < 1 || mm > 12) return "";
+  const cur = new Date().getFullYear();
+  let year = Math.floor(cur / 100) * 100 + yy;
+  if (year - cur > 50) year -= 100;
+  else if (cur - year > 49) year += 100;
+  const last = new Date(year, mm, 0).getDate();
+  if (dd === 0) dd = last;            // DD=00 means end of month
+  if (dd > last) return "";
+  return year + "-" + String(mm).padStart(2, "0") + "-" + String(dd).padStart(2, "0");
+}
+function aiAt(body, i) {
+  for (const len of [2, 3]) {
+    const ai = body.slice(i, i + len);
+    if (AI_FIXED[ai] || AI_VAR[ai]) return ai;
   }
+  return "";
+}
+function parseGs1(code) {
+  let body = String(code || "").trim()
+    .replace(/^\][A-Za-z]\d/, "")                    // ]d2 ]C1 ]Q3 ...
+    .replace(/<GS>|\{GS\}|\[GS\]|\u001d|\u241d/g, GS); // normalise separators
+  const out = { isGs1: false, ais: {} };
+  if (/^\(\d{2,4}\)/.test(body)) {
+    const re = /\((\d{2,4})\)([^(]*)/g;
+    let m;
+    while ((m = re.exec(body))) out.ais[m[1]] = m[2].replace(new RegExp(GS, "g"), "").trim();
+  } else {
+    const hadGs = body.includes(GS);
+    body = body.replace(/^\u001d+/, "");
+    if (!hadGs && !(body.length >= 16 && body.startsWith("01") && gtinValid(body.slice(2, 16)))) return out;
+    let i = 0;
+    while (i < body.length) {
+      if (body[i] === GS) { i++; continue; }
+      const ai = aiAt(body, i);
+      if (!ai) break;
+      i += ai.length;
+      if (AI_FIXED[ai]) {
+        out.ais[ai] = body.slice(i, i + AI_FIXED[ai]);
+        i += AI_FIXED[ai];
+      } else {
+        let j = body.indexOf(GS, i);
+        if (j === -1) j = body.length;
+        j = Math.min(j, i + AI_VAR[ai]);
+        out.ais[ai] = body.slice(i, j);
+        i = j;
+      }
+    }
+  }
+  const a = out.ais;
+  if (!Object.keys(a).length) return out;
+  out.isGs1 = true;
+  if (a["01"] || a["02"]) out.gtin = a["01"] || a["02"];
+  if (a["17"]) out.expires = gs1Date(a["17"]);
+  if (a["10"]) out.lot = a["10"];
+  if (a["21"]) out.serial = a["21"];
+  if (a["11"]) out.made = gs1Date(a["11"]);
+  if (!out.expires && a["15"]) out.expires = gs1Date(a["15"]); // best-before as fallback
   return out;
 }
 function knownByBarcode(code) {
-  return state.items.filter(it => it.barcode && it.barcode === code);
+  const k = codeKey(code);
+  return k ? state.items.filter(it => it.barcode && codeKey(it.barcode) === k) : [];
+}
+function remembered(code) {
+  const k = codeKey(code);
+  if (!k) return null;
+  if (state.catalog[k]) return state.catalog[k];
+  const hit = knownByBarcode(code)[0];
+  return hit ? { name: hit.name, category: hit.category, unit: hit.unit } : null;
 }
 function renderItem(item) {
   const s = statusOf(item);
@@ -403,32 +482,53 @@ function editItem(id) {
   document.getElementById("saveBtn").textContent = "Update item";
   showKnown(item.barcode);
 }
-function showKnown(code) {
+function showKnown(code, overwrite) {
   const box = document.getElementById("known");
   const hits = knownByBarcode(code).filter(i => i.id !== editingId);
-  if (!code || !hits.length) { box.classList.add("hidden"); return; }
+  const mem = remembered(code);
+  if (!code || (!hits.length && !mem)) { box.classList.add("hidden"); return null; }
   box.classList.remove("hidden");
-  box.innerHTML = `<strong>Already on the shelf:</strong> ${escapeHtml([...new Set(hits.map(h => h.name))].join(", "))}. Same lot and expiration adds quantity.`;
-  if (!editingId && hits[0]) {
+  const names = [...new Set(hits.map(h => h.name))];
+  box.innerHTML = hits.length
+    ? `<strong>Already on the shelf:</strong> ${escapeHtml(names.join(", "))}. Same lot and expiration adds quantity.`
+    : `<strong>Known item:</strong> ${escapeHtml(mem.name)}. Filled in from earlier scans.`;
+  if (!editingId && mem) {
     const f = formEls();
-    if (!f.name.value) f.name.value = hits[0].name;
-    if (hits[0].category) f.category.value = hits[0].category;
-    if (hits[0].unit) f.unit.value = hits[0].unit;
+    if (overwrite || !f.name.value) f.name.value = mem.name;
+    if (mem.category && CATEGORIES.includes(mem.category)) f.category.value = mem.category;
+    if (mem.unit) f.unit.value = mem.unit;
   }
+  return mem;
 }
 function scanner() {
   if (!window.Html5Qrcode) return null;
   if (!html5) html5 = new Html5Qrcode("reader", { formatsToSupport: FORMATS, verbose: false });
   return html5;
 }
-function applyCode(raw) {
+function applyCode(raw, fromCamera) {
   const f = formEls();
   const gs1 = parseGs1(raw);
-  f.barcode.value = gs1.gtin || raw;
-  if (gs1.expires && !f.expires.value) f.expires.value = gs1.expires;
-  if (gs1.lot && !f.lot.value) f.lot.value = gs1.lot;
-  showKnown(f.barcode.value);
-  document.getElementById("scanStatus").textContent = "Read " + f.barcode.value + (gs1.expires ? ". Expiry came from the barcode." : ". Enter the expiration printed on the box.");
+  const clean = String(raw || "").replace(/[\u0000-\u001f]/g, "").trim();
+  f.barcode.value = gs1.gtin || clean;
+  // A fresh scan replaces lot/expiration; a typed code only fills blanks.
+  if (gs1.lot && (fromCamera || !f.lot.value)) f.lot.value = gs1.lot;
+  if (gs1.expires && (fromCamera || !f.expires.value)) f.expires.value = gs1.expires;
+  if (fromCamera && gs1.isGs1 && !gs1.lot && !editingId) f.lot.value = "";
+  if (fromCamera && gs1.isGs1 && !gs1.expires && !editingId) f.expires.value = "";
+  const mem = showKnown(f.barcode.value, fromCamera);
+  if (!mem && fromCamera && !editingId) f.name.value = "";
+  const parts = [];
+  if (gs1.isGs1) {
+    parts.push("GTIN " + (gs1.gtin || "none"));
+    parts.push("Lot " + (gs1.lot || "not in code"));
+    parts.push("Exp " + (gs1.expires || "not in code"));
+    if (gs1.serial) parts.push("Serial " + gs1.serial);
+  } else {
+    parts.push((gtin14(clean) ? "UPC/EAN " : "Code ") + clean);
+  }
+  let tail = mem ? " Item: " + mem.name + "." : " New code: type the name once and it will fill in next time.";
+  if (!gs1.isGs1 || !gs1.expires) tail += " Enter the expiration printed on the box.";
+  document.getElementById("scanStatus").textContent = "Read: " + parts.join(" · ") + "." + tail;
 }
 async function stopLive() {
   liveOn = false;
@@ -451,7 +551,7 @@ async function startLive() {
     await engine.start(
       { facingMode: "environment" },
       { fps: 8, qrbox: { width: 260, height: 140 }, aspectRatio: 1.777 },
-      (text) => { applyCode(text); stopLive(); },
+      (text) => { applyCode(text, true); stopLive(); },
       () => {}
     );
     liveOn = true;
@@ -478,7 +578,7 @@ async function scanPhotoFile(file) {
   status.textContent = "Reading the photo…";
   try {
     const text = await engine.scanFile(file, false);
-    applyCode(text);
+    applyCode(text, true);
   } catch (err) {
     status.textContent = "Could not read that photo. Fill the frame with the barcode, avoid glare, and try again — or type the numbers.";
   }
@@ -497,6 +597,8 @@ function upsertFromForm(ev) {
     notes: f.notes.value.trim()
   };
   if (!item.name) return;
+  const key = codeKey(item.barcode);
+  if (key) state.catalog[key] = { name: item.name, category: item.category, unit: item.unit };
   if (editingId) {
     const existing = state.items.find(i => i.id === editingId);
     if (existing) Object.assign(existing, item);
@@ -543,11 +645,8 @@ document.getElementById("cameraShot").addEventListener("change", e => {
 document.getElementById("startLive").addEventListener("click", startLive);
 document.getElementById("stopLive").addEventListener("click", stopLive);
 document.getElementById("barcode").addEventListener("change", e => {
-  const gs1 = parseGs1(e.target.value);
-  if (gs1.expires && !document.getElementById("expires").value) document.getElementById("expires").value = gs1.expires;
-  if (gs1.lot && !document.getElementById("lot").value) document.getElementById("lot").value = gs1.lot;
-  if (gs1.gtin) e.target.value = gs1.gtin;
-  showKnown(e.target.value.trim());
+  if (e.target.value.trim()) applyCode(e.target.value, false);
+  else showKnown("");
 });
 document.getElementById("q").addEventListener("input", render);
 document.getElementById("filterCat").addEventListener("change", render);
@@ -597,6 +696,7 @@ document.getElementById("importFile").addEventListener("change", async e => {
     }));
     state.items = replace ? cleaned : state.items.concat(cleaned);
     if (incoming.warnDays) state.warnDays = incoming.warnDays;
+    if (incoming.catalog && typeof incoming.catalog === "object") state.catalog = Object.assign({}, state.catalog, incoming.catalog);
     save();
   } catch (err) {
     alert("That file is not a shelf backup.");
