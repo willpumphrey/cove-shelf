@@ -844,7 +844,7 @@ document.getElementById("wipe").addEventListener("click", () => {
 // Reads McKesson SupplyManager order/invoice exports (.xls BIFF, .xlsx, .csv) with
 // the vendored SheetJS file. Header row and columns are found by name.
 const UNITS = ["boxes", "tests", "bottles", "packs", "each", "sutures", "blades", "cases", "kits"];
-const UOM_MAP = { BX: "boxes", EA: "each", CS: "cases", PK: "packs", PKG: "packs", BT: "bottles", BTL: "bottles", BO: "bottles", KT: "kits", KIT: "kits", TS: "tests", TST: "tests", CT: "each", DZ: "each", RL: "each", PR: "each", BG: "packs", TR: "each" };
+const UOM_MAP = { BX: "boxes", EA: "each", CS: "cases", PK: "packs", PKG: "packs", BT: "bottles", BTL: "bottles", BO: "bottles", VL: "bottles", KT: "kits", KIT: "kits", TS: "tests", TST: "tests", CT: "each", DZ: "each", RL: "each", PR: "each", BG: "packs", TR: "each" };
 // Headers are normalised first: lower case, "no."/"number"/"num" -> "#",
 // punctuation dropped, so "McK Item No.", "Item Number" and "Item #" all match.
 const COLS = [
@@ -896,11 +896,11 @@ const PROCEDURE_MEDS = /\b(acetaminophen|ibuprofen|albuterol|lidocaine|tetracain
 function guessCategory(desc) {
   const d = String(desc || "");
   if (PROCEDURE_MEDS.test(d)) return "Procedure meds";
-  if (/\b(gauze|dressing|bandage|sponge|non-?adherent|telfa|band-?aid|adhesive strip|wound)/i.test(d)) return "Dressings";
-  if (/\b(suture|staple|skin closure|steri-?strip)/i.test(d)) return "Sutures";
-  if (/\b(test|strep|flu|influenza|covid|sars|rsv|mono|urinalysis|ua|urine|reagent|glucose|a1c|hcg|pregnancy|lancet|cuvette|hemoglobin|control)\b/i.test(d)) return "POC tests";
+  if (/\b(gauze|dressing|bandage|sponge|non-?adherent|telfa|band-?aid|adhesive strip|wound|medical tape|coban)/i.test(d)) return "Dressings";
+  if (/\b(suture|staple|skin closure|steri-?strip|skin adhesive|tissue adhesive|liquiband|dermabond)/i.test(d)) return "Sutures";
+  if (/\b(test|strep|flu|influenza|covid|sars|rsv|mono|urinalysis|ua|urine|reagent|glucose|a1c|hcg|pregnancy|lancet|cuvette|hemoglobin|control solution|controls)\b/i.test(d)) return "POC tests";
   if (/\b(alcohol|chlorhexidine|betadine|povidone|iodine|antiseptic|peroxide|sanitiz|disinfect)/i.test(d)) return "Antiseptics";
-  if (/\b(curette|speculum|scalpel|blade|forceps|probe cover|syringe|needle|glove|drape|tray|applicator|depressor|sharps|specimen|swab|thermometer|otoscope|tip)\b/i.test(d)) return "Procedure supplies";
+  if (/\b(curette|speculum|scalpel|blade|forceps|probe cover|syringe|needle|glove|drape|tray|applicator|depressor|sharps|specimen|swab|thermometer|otoscope|tip|biopsy|punch|mask|cautery)\b/i.test(d)) return "Procedure supplies";
   return "Other";
 }
 function shortName(desc) {
@@ -1081,7 +1081,7 @@ function addImported() {
   const pick = importRows.filter(r => !r.skip && r.checked && r.qty > 0 && String(r.name).trim());
   pick.forEach(r => {
     const name = String(r.name).trim();
-    const notes = [r.mfrName, r.mfrNo && "Mfr #" + r.mfrNo, r.date && "Ordered " + r.date].filter(Boolean).join(" · ");
+    const notes = [r.notesHint, r.mfrName, r.mfrNo && "Mfr #" + r.mfrNo, r.date && "Ordered " + r.date].filter(Boolean).join(" · ");
     const existing = state.items.find(i => i.needsScan && r.mck && i.mckesson === r.mck);
     if (existing) existing.qty = Number(existing.qty) + r.qty;
     else state.items.push({
