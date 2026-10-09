@@ -142,6 +142,7 @@
     <div class="card">
       <button id="importMckBtn" type="button" class="secondary">Import McKesson order</button>
       <input id="importMck" class="hidden" type="file" accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
+      <div id="importMsg" class="match hidden" role="alert"></div>
       <p class="hint">Pick the McKesson order or invoice export (.xls, .xlsx or .csv) from Files. Items land on the shelf flagged “needs lot/exp scan”; then scan each box to fill lot and expiration.</p>
     </div>
     <div class="card">
@@ -844,26 +845,36 @@ document.getElementById("wipe").addEventListener("click", () => {
 // the vendored SheetJS file. Header row and columns are found by name.
 const UNITS = ["boxes", "tests", "bottles", "packs", "each", "sutures", "blades", "cases", "kits"];
 const UOM_MAP = { BX: "boxes", EA: "each", CS: "cases", PK: "packs", PKG: "packs", BT: "bottles", BTL: "bottles", BO: "bottles", KT: "kits", KIT: "kits", TS: "tests", TST: "tests", CT: "each", DZ: "each", RL: "each", PR: "each", BG: "packs", TR: "each" };
+// Headers are normalised first: lower case, "no."/"number"/"num" -> "#",
+// punctuation dropped, so "McK Item No.", "Item Number" and "Item #" all match.
 const COLS = [
-  ["desc", /descr|^product( name)?$|^item name$/],
-  ["shipQty", /ship(ped)?\s*q(ty|uantity)|q(ty|uantity)\s*ship/],
-  ["qty", /^q(ty|uantity)\b|^order(ed)?\s*q(ty|uantity)/],
-  ["mfrNo", /^(manufacturer|mfr|mfg)\s*(#|no\b|num|part|item|cat)/],
-  ["mfrName", /^(manufacturer|mfr|mfg)(\s*name)?$|^vendor$/],
-  ["mck", /^(mck(esson)?\s*)?item\s*(#|no\b|num)|^mck(esson)?\s*(#|no\b|num)/],
-  ["uom", /^uom$|unit of measure|^u\/?m$|^unit$/],
+  ["desc", /descr|^(product|item|material)( name)?$|^product desc|^name$/],
+  ["shipQty", /ship(ped)?( q(ty|uantity))?$|^ship(ped)? q|^q(ty|uantity)? ?sh(ip(ped)?|pd)|^shp?d( qty)?$|^qty shpd|^shipped$|^received|^qty rec|^delivered/],
+  ["qty", /^q(ty|uantity)\b|^order(ed)? q|^qty ord|^ord(ered)? qty|^qty$/],
+  ["mfrNo", /^(manufacturer|mfr|mfg|vendor)( part| item| cat(alog)?)? ?#|^(mfr|mfg|manufacturer) (part|item|cat(alog)?)|^catalog ?#?$|^part ?#$|^vendor (part|item)/],
+  ["mfrName", /^(manufacturer|mfr|mfg|vendor|brand)( name)?$/],
+  ["mck", /^(mck(esson)? )?(item|product|sku|material) ?#$|^mck(esson)? ?#?$|^mck(esson)? (item|product|sku)|^item ?#?$|^sku$/],
+  ["uom", /^uom$|unit of (measure|issue)|^u ?m$|^u ?o ?m$|^unit$|^selling unit/],
   ["upc", /upc|gtin|\bean\b|barcode/],
   ["ndc", /\bndc\b/],
-  ["date", /^(invoice|order|ship)\s*date|^date$/],
+  ["date", /^(invoice|order|ship|po) ?date|^date$/],
   ["cat", /category|^class|segment/],
-  ["order", /^order\s*(#|no\b|num)/],
-  ["invoice", /^invoice\s*(#|no\b|num)/],
-  ["line", /^line\b/]
+  ["order", /^order ?#$|^(po|sales) order ?#$/],
+  ["invoice", /^invoice ?#$/],
+  ["line", /^line( ?#)?$|^ln$/]
 ];
+function normHeader(h) {
+  return String(h ?? "").toLowerCase()
+    .replace(/[\u00a0\s_]+/g, " ")
+    .replace(/\b(no|nbr|num|number)\b\.?/g, "#")
+    .replace(/[^a-z0-9# ]+/g, " ")
+    .replace(/\s+/g, " ").trim()
+    .replace(/ #/g, " #").replace(/# #/g, "#");
+}
 function mapHeader(row) {
   const map = {};
-  row.forEach((h, idx) => {
-    const n = String(h || "").toLowerCase().replace(/\s+/g, " ").trim();
+  (row || []).forEach((h, idx) => {
+    const n = normHeader(h);
     if (!n) return;
     for (const [role, re] of COLS) {
       if (map[role] === undefined && re.test(n)) { map[role] = idx; break; }
@@ -872,7 +883,7 @@ function mapHeader(row) {
   return map;
 }
 function findHeader(rows) {
-  for (let r = 0; r < Math.min(rows.length, 40); r++) {
+  for (let r = 0; r < Math.min(rows.length, 60); r++) {
     const m = mapHeader(rows[r]);
     if (m.desc !== undefined && (m.qty !== undefined || m.shipQty !== undefined || m.mck !== undefined)) return { r, m };
   }
@@ -932,18 +943,99 @@ function loadSheetJS() {
     document.head.appendChild(sc);
   });
 }
+function fileBytes(file) {
+  if (file.arrayBuffer) return file.arrayBuffer();
+  return new Promise((resolve, reject) => {           // older iOS Safari
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(fr.error || new Error("FileReader failed"));
+    fr.readAsArrayBuffer(file);
+  });
+}
+function bytesToText(buf) {
+  const u = new Uint8Array(buf);
+  let enc = "utf-8";
+  if (u[0] === 0xff && u[1] === 0xfe) enc = "utf-16le";
+  else if (u[0] === 0xfe && u[1] === 0xff) enc = "utf-16be";
+  else if (u.length > 3 && u[1] === 0 && u[3] === 0) enc = "utf-16le";
+  try {
+    const t = new TextDecoder(enc, { fatal: enc === "utf-8" }).decode(u);
+    return t.replace(/^\ufeff/, "");
+  } catch (e) {
+    return new TextDecoder("windows-1252").decode(u);
+  }
+}
+function sheetRows(XLSX, ws) {
+  return XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "", blankrows: false });
+}
+// Collect candidate tables from every route we can read: workbook sheets,
+// HTML tables (".xls" files that are really web pages), and plain CSV/TSV text.
+function candidateTables(XLSX, buf) {
+  const out = [];
+  const u = new Uint8Array(buf);
+  const isZip = u[0] === 0x50 && u[1] === 0x4b;
+  const isOle = u[0] === 0xd0 && u[1] === 0xcf;
+  try {
+    const wb = XLSX.read(buf, { type: "array", cellDates: false });
+    wb.SheetNames.forEach(n => out.push({ name: n, rows: sheetRows(XLSX, wb.Sheets[n]) }));
+  } catch (e) { out.readError = e && e.message; }
+  if (!isZip && !isOle) {
+    const text = bytesToText(buf);
+    if (/<table[\s>]/i.test(text)) {
+      const doc = new DOMParser().parseFromString(text, "text/html");
+      [...doc.querySelectorAll("table")].forEach((t, i) => {
+        try { out.push({ name: "HTML table " + (i + 1), rows: sheetRows(XLSX, XLSX.utils.table_to_sheet(t, { raw: true })) }); } catch (e) {}
+      });
+    } else if (!out.length || out.every(t => t.rows.length < 2)) {
+      const delim = (text.split("\n")[0].match(/\t/g) || []).length > 0 ? "\t" : undefined;
+      try {
+        const wb = XLSX.read(text, { type: "string", FS: delim });
+        wb.SheetNames.forEach(n => out.push({ name: "text", rows: sheetRows(XLSX, wb.Sheets[n]) }));
+      } catch (e) {}
+    }
+  }
+  return out;
+}
+function describeInvoiceList(rows, h) {
+  // McKesson "Invoices" list: one row per invoice, no item lines.
+  const m = mapHeader(rows[h]);
+  const body = rows.slice(h + 1).filter(r => r.some(c => String(c).trim()));
+  const dates = m.date !== undefined ? body.map(r => String(r[m.date]).trim()).filter(Boolean).sort() : [];
+  const span = dates.length ? ` dated ${dates[0]} to ${dates[dates.length - 1]}` : "";
+  return `This is McKesson's invoice list (${body.length} invoice${body.length === 1 ? "" : "s"}${span}). It only has invoice totals, no item lines, so there is nothing to put on the shelf. In McKesson SupplyManager, open one invoice and export its line-item detail (the file with Item #, Description and Quantity columns), then import that.`;
+}
 async function readMckessonFile(file) {
   const XLSX = await loadSheetJS();
-  const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false });
-  for (const name of wb.SheetNames) {
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: "" });
-    const h = findHeader(rows);
+  const buf = await fileBytes(file);
+  if (!buf || !buf.byteLength) throw new Error(`"${file.name}" is empty (0 bytes). If it's in iCloud, open it once in Files so it downloads, then try again.`);
+  const tables = candidateTables(XLSX, buf);
+  for (const t of tables) {
+    const h = findHeader(t.rows);
     if (!h) continue;
-    return rows.slice(h.r + 1)
+    const lines = t.rows.slice(h.r + 1)
       .filter(r => r.some(c => String(c).trim() !== ""))
-      .map(r => classifyLine(r, h.m));
+      .map(r => classifyLine(r, h.m))
+      .filter(l => !/^(sub)?total|^grand total/i.test(l.desc));
+    if (lines.length) return lines;
   }
-  throw new Error("No header row with a Description and Quantity / Item # column was found.");
+  // Nothing importable: explain what we did find.
+  for (const t of tables) {
+    for (let r = 0; r < Math.min(t.rows.length, 20); r++) {
+      const m = mapHeader(t.rows[r]);
+      if (m.desc === undefined && m.invoice !== undefined && (m.date !== undefined || m.order !== undefined)) throw new Error(describeInvoiceList(t.rows, r));
+    }
+  }
+  if (!tables.length) throw new Error(`Couldn't open "${file.name}" as a spreadsheet, web-page table or CSV${tables.readError ? " (" + tables.readError + ")" : ""}.`);
+  const found = tables.slice(0, 3).map(t => {
+    const hdr = t.rows.find(r => r.filter(c => String(c).trim()).length >= 2) || t.rows.find(r => r.some(c => String(c).trim())) || [];
+    return `${t.name}: ${hdr.filter(c => String(c).trim()).slice(0, 8).join(", ").slice(0, 160) || "no text"}`;
+  }).join(" | ");
+  throw new Error(`No item lines found. The import needs a column like Description plus Quantity or Item #. What the file has: ${found}`);
+}
+function showImportMsg(text) {
+  const el = document.getElementById("importMsg");
+  el.textContent = text || "";
+  el.classList.toggle("hidden", !text);
 }
 function renderImport() {
   const ok = importRows.filter(r => !r.skip);
@@ -1010,13 +1102,16 @@ document.getElementById("importMck").addEventListener("change", async e => {
   const file = e.target.files && e.target.files[0];
   e.target.value = "";
   if (!file) return;
+  showImportMsg("Reading " + file.name + "…");
   try {
     importRows = await readMckessonFile(file);
+    showImportMsg("");
     renderImport();
     show("import");
     window.scrollTo(0, 0);
   } catch (err) {
-    alert("Couldn't read that file as a McKesson order. " + (err && err.message ? err.message : ""));
+    showImportMsg("Couldn't import " + file.name + ". " + (err && err.message ? err.message : String(err)));
+    window.scrollTo(0, 0);
   }
 });
 document.getElementById("impAdd").addEventListener("click", addImported);
