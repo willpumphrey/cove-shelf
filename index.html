@@ -111,7 +111,7 @@
 <body>
 <header>
   <h1>Cove supply shelf</h1>
-  <p>Clinic supplies only. Not medications. Stored in this Safari only.</p>
+  <p>Clinic supplies and in-office procedure meds. Dispensed meds stay in AtlasMD. Stored in this Safari only.</p>
   <div class="counts">
     <div class="count"><b id="nExpired">0</b><span>Expired</span></div>
     <div class="count"><b id="nSoon">0</b><span>Inside window</span></div>
@@ -203,7 +203,7 @@
           <button type="submit" id="saveBtn">Save item</button>
           <button type="button" id="clearForm" class="secondary">Clear</button>
         </div>
-        <p class="hint">Same barcode with the same lot and expiration adds to quantity. A different lot or date becomes its own row. Medications and controlled substances stay in AtlasMD, not here.</p>
+        <p class="hint">Same barcode with the same lot and expiration adds to quantity. A different lot or date becomes its own row. Dispensed meds and controlled substances stay in AtlasMD, not here.</p>
       </form>
     </div>
   </section>
@@ -928,9 +928,9 @@ function classifyLine(row, m) {
   if (!desc && !line.mck) line.skip = "blank line";
   else if (FEE_WORDS.test(all) && !SUPPLY_WORDS.test(desc)) line.skip = "fee or charge, not a stock item";
   else if (procedureMed) line.notesHint = "In-office procedure use, not dispensed.";
-  else if (/pharm|drug|\brx\b|medication|vaccine|biolog/i.test(line.cat)) line.skip = "pharmacy category: medications stay in AtlasMD / Dispensary";
-  else if (line.ndc && !SUPPLY_WORDS.test(desc)) line.skip = "has an NDC: medications stay in AtlasMD / Dispensary";
-  else if (DRUG_WORDS.test(desc) && !SUPPLY_WORDS.test(desc)) line.skip = "looks like a medication: those stay in AtlasMD / Dispensary";
+  else if (/pharm|drug|\brx\b|medication|vaccine|biolog/i.test(line.cat)) line.skip = "pharmacy category: medications other than in-office procedure meds stay in AtlasMD / Dispensary";
+  else if (line.ndc && !SUPPLY_WORDS.test(desc)) line.skip = "has an NDC: medications other than in-office procedure meds stay in AtlasMD / Dispensary";
+  else if (DRUG_WORDS.test(desc) && !SUPPLY_WORDS.test(desc)) line.skip = "looks like a medication: medications other than in-office procedure meds stay in AtlasMD / Dispensary";
   if (!line.skip && line.upc && !gtin14(line.upc)) line.upc = "";
   const mem = (line.mck && state.mck[line.mck]) || (line.upc && state.catalog[codeKey(line.upc)]);
   if (mem && mem.name) { line.name = mem.name; if (CATEGORIES.includes(mem.category)) line.category = mem.category; if (mem.unit) line.unit = mem.unit; }
