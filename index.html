@@ -46,7 +46,8 @@
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 12px;
     padding: 8px 10px;
-    min-width: 88px;
+    flex: 1 1 0;
+    min-width: 0;
   }
   .count b { display: block; font-size: 1.15rem; }
   .count span { font-size: 0.72rem; color: #c5d6d6; }
@@ -97,6 +98,14 @@
   .filters { display: flex; gap: 8px; margin-bottom: 10px; }
   .filters select { flex: 1; }
   .file-btn { display: inline-block; }
+  .badge.needs { background: #e8eefc; color: #2a4a8a; }
+  .count.click { cursor: pointer; }
+  .imp-row { display: grid; grid-template-columns: 28px 1fr; gap: 8px; align-items: start; border-top: 1px solid var(--line); padding: 10px 0; }
+  .imp-row:first-child { border-top: 0; }
+  .imp-row input[type="checkbox"] { width: 22px; height: 22px; margin-top: 10px; }
+  .imp-row .split input, .imp-row .split select { padding: 8px; }
+  .imp-row input.nm { padding: 8px; }
+  .skipped { color: var(--muted); font-size: 0.82rem; }
 </style>
 </head>
 <body>
@@ -107,6 +116,7 @@
     <div class="count"><b id="nExpired">0</b><span>Expired</span></div>
     <div class="count"><b id="nSoon">0</b><span>Inside window</span></div>
     <div class="count"><b id="nOk">0</b><span>Dated and OK</span></div>
+    <div class="count click" id="needsCount" title="Show items waiting for a lot/expiration scan"><b id="nNeeds">0</b><span>Need scan</span></div>
   </div>
 </header>
 <main>
@@ -122,12 +132,18 @@
         <option value="expired">Expired</option>
         <option value="soon">Inside window</option>
         <option value="nodate">No date yet</option>
+        <option value="needs">Needs lot/exp scan</option>
       </select>
     </div>
     <div id="list"></div>
   </section>
 
   <section id="view-add" class="hidden">
+    <div class="card">
+      <button id="importMckBtn" type="button" class="secondary">Import McKesson order</button>
+      <input id="importMck" class="hidden" type="file" accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
+      <p class="hint">Pick the McKesson order or invoice export (.xls, .xlsx or .csv) from Files. Items land on the shelf flagged “needs lot/exp scan”; then scan each box to fill lot and expiration.</p>
+    </div>
     <div class="card">
       <div class="row-actions">
         <button id="scanPhoto" type="button">Scan with camera</button>
@@ -141,6 +157,11 @@
         <label for="barcode">Barcode</label>
         <input id="barcode" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="Scan or type">
         <div id="known" class="match hidden"></div>
+        <div id="linking" class="match hidden"></div>
+        <div id="linkBox" class="match hidden">
+          <label for="linkPick" style="margin-top:0">Is this one of your imported items?</label>
+          <select id="linkPick"></select>
+        </div>
         <label for="name">Name</label>
         <input id="name" type="text" required placeholder="COVID antigen test, alcohol, sutures">
         <label for="category">Category</label>
@@ -170,6 +191,8 @@
               <option>each</option>
               <option>sutures</option>
               <option>blades</option>
+              <option>cases</option>
+              <option>kits</option>
             </select>
           </div>
         </div>
@@ -181,6 +204,22 @@
         </div>
         <p class="hint">Same barcode with the same lot and expiration adds to quantity. A different lot or date becomes its own row. Medications and controlled substances stay in AtlasMD, not here.</p>
       </form>
+    </div>
+  </section>
+
+  <section id="view-import" class="hidden">
+    <div class="card">
+      <h2 style="margin:0 0 4px;font-size:1.05rem">McKesson order preview</h2>
+      <p class="hint" id="impSummary"></p>
+      <div id="impRows"></div>
+      <div class="row-actions">
+        <button id="impAdd" type="button">Add to shelf</button>
+        <button id="impCancel" type="button" class="ghost">Cancel</button>
+      </div>
+    </div>
+    <div class="card hidden" id="impSkipCard">
+      <h2 style="margin:0 0 4px;font-size:1rem">Skipped</h2>
+      <div id="impSkipped" class="skipped"></div>
     </div>
   </section>
 
@@ -224,6 +263,8 @@ const KEY = "cove-supply-shelf-v1";
 const FORMATS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const state = load();
 let editingId = null;
+let linkingId = null;
+let importRows = [];
 let html5 = null;
 let liveOn = false;
 
@@ -233,7 +274,9 @@ function load() {
     const st = {
       items: Array.isArray(raw.items) ? raw.items : [],
       warnDays: [30, 60, 90].includes(raw.warnDays) ? raw.warnDays : 30,
-      catalog: raw.catalog && typeof raw.catalog === "object" ? raw.catalog : {}
+      catalog: raw.catalog && typeof raw.catalog === "object" ? raw.catalog : {},
+      mck: raw.mck && typeof raw.mck === "object" ? raw.mck : {},
+      imported: Array.isArray(raw.imported) ? raw.imported : []
     };
     // Backfill the name memory from anything already on the shelf.
     st.items.forEach(i => {
@@ -242,7 +285,7 @@ function load() {
     });
     return st;
   } catch (e) {
-    return { items: [], warnDays: 30, catalog: {} };
+    return { items: [], warnDays: 30, catalog: {}, mck: {}, imported: [] };
   }
 }
 function save() {
@@ -277,6 +320,7 @@ function statusOf(item) {
   return "ok";
 }
 function statusLabel(item) {
+  if (item.needsScan) return "Needs lot/exp scan";
   const s = statusOf(item);
   const days = daysUntil(item.expires);
   if (s === "none") return "No date";
@@ -392,15 +436,16 @@ function renderItem(item) {
     <div>
       <h2>${escapeHtml(item.name)}</h2>
       <div class="meta">${escapeHtml(item.qty)} ${escapeHtml(item.unit)} · ${escapeHtml(item.category)}<br>
-        ${item.lot ? "Lot " + escapeHtml(item.lot) + " · " : ""}${item.barcode ? escapeHtml(item.barcode) : "No barcode"}
+        ${item.lot ? "Lot " + escapeHtml(item.lot) + " · " : ""}${item.barcode ? escapeHtml(item.barcode) : (item.mckesson ? "McK #" + escapeHtml(item.mckesson) : "No barcode")}
         ${item.notes ? "<br>" + escapeHtml(item.notes) : ""}</div>
       <div class="row-actions">
+        ${item.needsScan ? `<button type="button" data-act="scan">Scan box</button>` : ""}
         <button type="button" class="secondary" data-act="use">Use 1</button>
         <button type="button" class="ghost" data-act="edit">Edit</button>
         <button type="button" class="ghost" data-act="del">Remove</button>
       </div>
     </div>
-    <div><span class="badge ${s}">${escapeHtml(statusLabel(item))}</span></div>
+    <div><span class="badge ${item.needsScan ? "needs" : s}">${escapeHtml(statusLabel(item))}</span></div>
   </article>`;
 }
 function sorted(items) {
@@ -415,12 +460,13 @@ function render() {
   document.getElementById("nExpired").textContent = state.items.filter(i => statusOf(i) === "expired").length;
   document.getElementById("nSoon").textContent = state.items.filter(i => statusOf(i) === "soon").length;
   document.getElementById("nOk").textContent = state.items.filter(i => statusOf(i) === "ok").length;
+  document.getElementById("nNeeds").textContent = state.items.filter(i => i.needsScan).length;
   document.getElementById("warnDays").value = String(state.warnDays);
   const q = document.getElementById("q").value.trim().toLowerCase();
   const cat = document.getElementById("filterCat").value;
   const st = document.getElementById("filterStatus").value;
   const items = state.items.filter(i => {
-    const blob = `${i.name} ${i.barcode} ${i.lot} ${i.notes}`.toLowerCase();
+    const blob = `${i.name} ${i.barcode} ${i.lot} ${i.notes} ${i.mckesson || ""} ${i.mfrNo || ""}`.toLowerCase();
     if (q && !blob.includes(q)) return false;
     if (cat && cat !== "All categories" && i.category !== cat) return false;
     const s = statusOf(i);
@@ -428,6 +474,7 @@ function render() {
     if (st === "expired" && s !== "expired") return false;
     if (st === "soon" && s !== "soon") return false;
     if (st === "nodate" && s !== "none") return false;
+    if (st === "needs" && !i.needsScan) return false;
     return true;
   });
   document.getElementById("list").innerHTML = items.length
@@ -439,7 +486,7 @@ function render() {
     : `<div class="empty">Nothing expired, inside the ${state.warnDays}-day window, or missing a date.</div>`;
 }
 function show(view) {
-  ["list", "add", "alerts", "data"].forEach(v => {
+  ["list", "add", "import", "alerts", "data"].forEach(v => {
     document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
   });
   document.querySelectorAll(".nav button").forEach(b => b.classList.toggle("active", b.dataset.view === view));
@@ -453,6 +500,7 @@ function formEls() {
 }
 function clearForm() {
   editingId = null;
+  setLinking(null);
   const f = formEls();
   f.barcode.value = "";
   f.name.value = "";
@@ -469,6 +517,7 @@ function editItem(id) {
   const item = state.items.find(i => i.id === id);
   if (!item) return;
   editingId = id;
+  setLinking(null);
   show("add");
   const f = formEls();
   f.barcode.value = item.barcode || "";
@@ -500,6 +549,45 @@ function showKnown(code, overwrite) {
   }
   return mem;
 }
+// ---- Matching scans to imported (needs-scan) items -----------------------------
+function needsItems() { return state.items.filter(i => i.needsScan && Number(i.qty) > 0); }
+function setLinking(id) {
+  linkingId = id;
+  const box = document.getElementById("linking");
+  const ph = id && state.items.find(i => i.id === id);
+  if (!ph) { linkingId = null; box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  box.innerHTML = `<strong>Receiving:</strong> ${escapeHtml(ph.name)} — ${escapeHtml(ph.qty)} ${escapeHtml(ph.unit)} waiting for lot/exp. Set Quantity to how many have <em>this</em> lot; the rest stay waiting for the next scan.`;
+  const f = formEls();
+  f.name.value = ph.name;
+  if (CATEGORIES.includes(ph.category)) f.category.value = ph.category;
+  if (ph.unit) f.unit.value = ph.unit;
+  f.qty.value = ph.qty;
+  document.getElementById("linkBox").classList.add("hidden");
+}
+function findPlaceholder(code, mem) {
+  const k = codeKey(code);
+  const list = needsItems();
+  return list.find(p => k && (codeKey(p.barcode) === k || codeKey(p.upc) === k))
+    || list.find(p => mem && mem.mck && p.mckesson === mem.mck)
+    || list.find(p => mem && mem.name && p.name === mem.name)
+    || null;
+}
+function offerLinkPicker() {
+  const list = needsItems();
+  const box = document.getElementById("linkBox");
+  if (!list.length || editingId || linkingId) { box.classList.add("hidden"); return; }
+  document.getElementById("linkPick").innerHTML = `<option value="">No, it's something else</option>` +
+    list.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} (${escapeHtml(p.qty)} ${escapeHtml(p.unit)}${p.mckesson ? ", McK #" + escapeHtml(p.mckesson) : ""})</option>`).join("");
+  box.classList.remove("hidden");
+}
+function startScanFor(id) {
+  clearForm();
+  show("add");
+  setLinking(id);
+  document.getElementById("scanStatus").textContent = "Now scan the box (the square DataMatrix by LOT / expiry) or type the lot and expiration.";
+  window.scrollTo(0, 0);
+}
 function scanner() {
   if (!window.Html5Qrcode) return null;
   if (!html5) html5 = new Html5Qrcode("reader", { formatsToSupport: FORMATS, verbose: false });
@@ -515,8 +603,18 @@ function applyCode(raw, fromCamera) {
   if (gs1.expires && (fromCamera || !f.expires.value)) f.expires.value = gs1.expires;
   if (fromCamera && gs1.isGs1 && !gs1.lot && !editingId) f.lot.value = "";
   if (fromCamera && gs1.isGs1 && !gs1.expires && !editingId) f.expires.value = "";
-  const mem = showKnown(f.barcode.value, fromCamera);
-  if (!mem && fromCamera && !editingId) f.name.value = "";
+  let mem = showKnown(f.barcode.value, fromCamera);
+  if (!mem && fromCamera && !editingId && !linkingId) f.name.value = "";
+  if (!editingId) {
+    if (linkingId) {
+      setLinking(linkingId);
+      mem = mem || { name: f.name.value };
+    } else {
+      const ph = findPlaceholder(f.barcode.value, mem);
+      if (ph) { setLinking(ph.id); mem = mem || { name: ph.name }; }
+      else offerLinkPicker();
+    }
+  }
   const parts = [];
   if (gs1.isGs1) {
     parts.push("GTIN " + (gs1.gtin || "none"));
@@ -598,12 +696,36 @@ function upsertFromForm(ev) {
   };
   if (!item.name) return;
   const key = codeKey(item.barcode);
-  if (key) state.catalog[key] = { name: item.name, category: item.category, unit: item.unit };
+  const ph = !editingId && linkingId ? state.items.find(i => i.id === linkingId) : null;
+  if (key) state.catalog[key] = Object.assign({}, state.catalog[key], { name: item.name, category: item.category, unit: item.unit }, ph && ph.mckesson ? { mck: ph.mckesson } : {});
+  if (ph && ph.mckesson) state.mck[ph.mckesson] = Object.assign({}, state.mck[ph.mckesson], { name: item.name, category: item.category, unit: item.unit }, key ? { gtin: key } : {});
+  if (ph) {
+    // One shelf entry per lot: carve this lot out of the waiting placeholder.
+    const take = Math.min(item.qty, Number(ph.qty));
+    ["mckesson", "mfrNo", "mfrName", "upc"].forEach(k => { if (ph[k]) item[k] = ph[k]; });
+    if (!item.notes && ph.notes) item.notes = ph.notes;
+    ph.qty = Number(ph.qty) - take;
+    if (ph.qty <= 0) state.items = state.items.filter(i => i.id !== ph.id);
+    const match = state.items.find(i => !i.needsScan && i.barcode === item.barcode && (i.lot || "") === item.lot && (i.expires || "") === item.expires && i.name === item.name);
+    if (match) match.qty = Number(match.qty) + item.qty;
+    else state.items.push({ id: uid(), added: todayISO(), ...item });
+    const left = ph.qty > 0 ? ph.qty : 0;
+    save();
+    clearForm();
+    if (left > 0) {
+      startScanFor(ph.id);
+      document.getElementById("scanStatus").textContent = "Saved. " + left + " " + ph.unit + " of " + ph.name + " still need a lot/exp — scan the next box, or go back to the shelf.";
+    } else show("list");
+    return;
+  }
   if (editingId) {
     const existing = state.items.find(i => i.id === editingId);
-    if (existing) Object.assign(existing, item);
+    if (existing) {
+      Object.assign(existing, item);
+      if (existing.needsScan && (item.lot || item.expires)) existing.needsScan = false;
+    }
   } else {
-    const match = state.items.find(i => i.barcode && i.barcode === item.barcode && (i.lot || "") === item.lot && (i.expires || "") === item.expires && i.name === item.name);
+    const match = state.items.find(i => !i.needsScan && i.barcode && i.barcode === item.barcode && (i.lot || "") === item.lot && (i.expires || "") === item.expires && i.name === item.name);
     if (match) {
       match.qty += item.qty;
       if (item.notes) match.notes = item.notes;
@@ -623,7 +745,7 @@ function download(filename, text, type) {
   URL.revokeObjectURL(a.href);
 }
 function toCsv(items) {
-  const cols = ["name", "category", "qty", "unit", "expires", "lot", "barcode", "notes", "added"];
+  const cols = ["name", "category", "qty", "unit", "expires", "lot", "barcode", "mckesson", "mfrNo", "needsScan", "notes", "added"];
   const lines = [cols.join(",")];
   items.forEach(i => lines.push(cols.map(c => `"${String(i[c] ?? "").replace(/"/g, '""')}"`).join(",")));
   return lines.join("\n");
@@ -671,6 +793,7 @@ document.body.addEventListener("click", e => {
       save();
     }
   } else if (btn.dataset.act === "edit") editItem(id);
+  else if (btn.dataset.act === "scan") startScanFor(id);
 });
 document.getElementById("exportJson").addEventListener("click", () => download("cove-supply-shelf.json", JSON.stringify(state, null, 2), "application/json"));
 document.getElementById("exportCsv").addEventListener("click", () => download("cove-supply-shelf.csv", toCsv(sorted(state.items)), "text/csv"));
@@ -692,11 +815,18 @@ document.getElementById("importFile").addEventListener("change", async e => {
       lot: i.lot || "",
       barcode: i.barcode || "",
       notes: i.notes || "",
-      added: i.added || todayISO()
+      added: i.added || todayISO(),
+      ...(i.needsScan ? { needsScan: true } : {}),
+      ...(i.mckesson ? { mckesson: String(i.mckesson) } : {}),
+      ...(i.mfrNo ? { mfrNo: String(i.mfrNo) } : {}),
+      ...(i.mfrName ? { mfrName: String(i.mfrName) } : {}),
+      ...(i.upc ? { upc: String(i.upc) } : {})
     }));
     state.items = replace ? cleaned : state.items.concat(cleaned);
     if (incoming.warnDays) state.warnDays = incoming.warnDays;
     if (incoming.catalog && typeof incoming.catalog === "object") state.catalog = Object.assign({}, state.catalog, incoming.catalog);
+    if (incoming.mck && typeof incoming.mck === "object") state.mck = Object.assign({}, state.mck, incoming.mck);
+    if (Array.isArray(incoming.imported)) state.imported = [...new Set(state.imported.concat(incoming.imported))];
     save();
   } catch (err) {
     alert("That file is not a shelf backup.");
@@ -708,6 +838,199 @@ document.getElementById("wipe").addEventListener("click", () => {
     state.items = [];
     save();
   }
+});
+// ---- McKesson order import ---------------------------------------------------
+// Reads McKesson SupplyManager order/invoice exports (.xls BIFF, .xlsx, .csv) with
+// the vendored SheetJS file. Header row and columns are found by name.
+const UNITS = ["boxes", "tests", "bottles", "packs", "each", "sutures", "blades", "cases", "kits"];
+const UOM_MAP = { BX: "boxes", EA: "each", CS: "cases", PK: "packs", PKG: "packs", BT: "bottles", BTL: "bottles", BO: "bottles", KT: "kits", KIT: "kits", TS: "tests", TST: "tests", CT: "each", DZ: "each", RL: "each", PR: "each", BG: "packs", TR: "each" };
+const COLS = [
+  ["desc", /descr|^product( name)?$|^item name$/],
+  ["shipQty", /ship(ped)?\s*q(ty|uantity)|q(ty|uantity)\s*ship/],
+  ["qty", /^q(ty|uantity)\b|^order(ed)?\s*q(ty|uantity)/],
+  ["mfrNo", /^(manufacturer|mfr|mfg)\s*(#|no\b|num|part|item|cat)/],
+  ["mfrName", /^(manufacturer|mfr|mfg)(\s*name)?$|^vendor$/],
+  ["mck", /^(mck(esson)?\s*)?item\s*(#|no\b|num)|^mck(esson)?\s*(#|no\b|num)/],
+  ["uom", /^uom$|unit of measure|^u\/?m$|^unit$/],
+  ["upc", /upc|gtin|\bean\b|barcode/],
+  ["ndc", /\bndc\b/],
+  ["date", /^(invoice|order|ship)\s*date|^date$/],
+  ["cat", /category|^class|segment/],
+  ["order", /^order\s*(#|no\b|num)/],
+  ["invoice", /^invoice\s*(#|no\b|num)/],
+  ["line", /^line\b/]
+];
+function mapHeader(row) {
+  const map = {};
+  row.forEach((h, idx) => {
+    const n = String(h || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (!n) return;
+    for (const [role, re] of COLS) {
+      if (map[role] === undefined && re.test(n)) { map[role] = idx; break; }
+    }
+  });
+  return map;
+}
+function findHeader(rows) {
+  for (let r = 0; r < Math.min(rows.length, 40); r++) {
+    const m = mapHeader(rows[r]);
+    if (m.desc !== undefined && (m.qty !== undefined || m.shipQty !== undefined || m.mck !== undefined)) return { r, m };
+  }
+  return null;
+}
+const SUPPLY_WORDS = /\b(syringe|needle|glove|gauze|sponge|dressing|bandage|tape|container|cover|curette|swab|test|kit|strip|cassette|specimen|cup|speculum|depressor|applicator|pad|blade|scalpel|suture|drape|tray|lancet|cuvette|probe|tube|collection|catheter|mask|gown|liner|paper|wipe|towel|bag|band|splint|sharps|thermometer)s?\b/i;
+const DRUG_WORDS = /(\d+(\.\d+)?\s*(mg|mcg|meq|g\/|mg\/ml|units?\/ml|iu)\b|\b(tablet|tab|capsule|cap|injection|inj|injectable|vial|ampule|suspension|syrup|elixir|ointment|cream|lotion|inhaler|inhalation|nebuliz|vaccine|ophthalmic|otic|suppositor|lidocaine|ceftriaxone|kenalog|triamcinolone|toradol|ketorolac|dexamethasone|methylprednisolone|depo|epinephrine|amoxicillin|ondansetron|promethazine|prednisone|insulin|heparin)\b)/i;
+const FEE_WORDS = /\b(freight|surcharge|handling|shipping|fuel|delivery charge|restock(ing)? fee|small order|tax|credit|discount|rebate)\b/i;
+function guessCategory(desc) {
+  const d = String(desc || "");
+  if (/\b(gauze|dressing|bandage|sponge|non-?adherent|telfa|band-?aid|adhesive strip|wound)/i.test(d)) return "Dressings";
+  if (/\b(suture|staple|skin closure|steri-?strip)/i.test(d)) return "Sutures";
+  if (/\b(test|strep|flu|influenza|covid|sars|rsv|mono|urinalysis|ua|urine|reagent|glucose|a1c|hcg|pregnancy|lancet|cuvette|hemoglobin|control)\b/i.test(d)) return "POC tests";
+  if (/\b(alcohol|chlorhexidine|betadine|povidone|iodine|antiseptic|peroxide|sanitiz|disinfect)/i.test(d)) return "Antiseptics";
+  if (/\b(curette|speculum|scalpel|blade|forceps|probe cover|syringe|needle|glove|drape|tray|applicator|depressor|sharps|specimen|swab|thermometer|otoscope|tip)\b/i.test(d)) return "Procedure supplies";
+  return "Other";
+}
+function shortName(desc) {
+  let d = String(desc || "").replace(/\s+/g, " ").trim();
+  d = d.replace(/\s+(for use with|for use on|compatible with)\b.*$/i, "");
+  if (d.length > 70) d = d.slice(0, 70).replace(/\s+\S*$/, "") + "…";
+  return d;
+}
+function classifyLine(row, m) {
+  const get = k => (m[k] === undefined ? "" : String(row[m[k]] ?? "").trim());
+  const desc = get("desc");
+  const line = {
+    desc, name: shortName(desc), mck: get("mck"), mfrNo: get("mfrNo"), mfrName: get("mfrName"),
+    upc: get("upc").replace(/\D/g, ""), ndc: get("ndc"), uomRaw: get("uom").toUpperCase(),
+    date: get("date"), cat: get("cat"), order: get("order"), invoice: get("invoice"), lineNo: get("line")
+  };
+  const qShip = get("shipQty"), qOrd = get("qty");
+  line.qty = Math.max(0, Math.round(Number((qShip !== "" ? qShip : qOrd).replace(/,/g, "")) || 0));
+  line.unit = UOM_MAP[line.uomRaw] || "each";
+  line.category = guessCategory(desc);
+  line.key = [line.invoice || line.order, line.lineNo, line.mck || desc].join("|");
+  const all = [desc, line.mfrNo, line.mfrName].join(" ");
+  if (!desc && !line.mck) line.skip = "blank line";
+  else if (FEE_WORDS.test(all) && !SUPPLY_WORDS.test(desc)) line.skip = "fee or charge, not a stock item";
+  else if (/pharm|drug|\brx\b|medication|vaccine|biolog/i.test(line.cat)) line.skip = "pharmacy category: medications stay in AtlasMD / Dispensary";
+  else if (line.ndc && !SUPPLY_WORDS.test(desc)) line.skip = "has an NDC: medications stay in AtlasMD / Dispensary";
+  else if (DRUG_WORDS.test(desc) && !SUPPLY_WORDS.test(desc)) line.skip = "looks like a medication: those stay in AtlasMD / Dispensary";
+  if (!line.skip && line.upc && !gtin14(line.upc)) line.upc = "";
+  const mem = (line.mck && state.mck[line.mck]) || (line.upc && state.catalog[codeKey(line.upc)]);
+  if (mem && mem.name) { line.name = mem.name; if (CATEGORIES.includes(mem.category)) line.category = mem.category; if (mem.unit) line.unit = mem.unit; }
+  line.already = state.imported.includes(line.key);
+  line.checked = !line.skip && !line.already && line.qty > 0;
+  return line;
+}
+function loadSheetJS() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((resolve, reject) => {
+    const sc = document.createElement("script");
+    sc.src = "xlsx.full.min.js";
+    sc.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error("SheetJS missing")));
+    sc.onerror = () => reject(new Error("Could not load xlsx.full.min.js"));
+    document.head.appendChild(sc);
+  });
+}
+async function readMckessonFile(file) {
+  const XLSX = await loadSheetJS();
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false });
+  for (const name of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: "" });
+    const h = findHeader(rows);
+    if (!h) continue;
+    return rows.slice(h.r + 1)
+      .filter(r => r.some(c => String(c).trim() !== ""))
+      .map(r => classifyLine(r, h.m));
+  }
+  throw new Error("No header row with a Description and Quantity / Item # column was found.");
+}
+function renderImport() {
+  const ok = importRows.filter(r => !r.skip);
+  const skipped = importRows.filter(r => r.skip);
+  document.getElementById("impSummary").textContent = `${importRows.length} line${importRows.length === 1 ? "" : "s"} in the file: ${ok.length} supply item${ok.length === 1 ? "" : "s"}, ${skipped.length} skipped. Untick anything you didn't receive and fix quantities, then Add to shelf.`;
+  document.getElementById("impRows").innerHTML = ok.length ? ok.map(r => {
+    const i = importRows.indexOf(r);
+    const ids = [r.mck && "McK #" + r.mck, r.mfrNo && "Mfr #" + r.mfrNo, r.mfrName, r.upc && "UPC " + r.upc, r.ndc && "NDC " + r.ndc].filter(Boolean).join(" · ");
+    return `<div class="imp-row" data-i="${i}">
+      <input type="checkbox" data-f="checked"${r.checked ? " checked" : ""} aria-label="Include">
+      <div>
+        <input class="nm" type="text" data-f="name" value="${escapeHtml(r.name)}" aria-label="Name">
+        <div class="meta" style="margin-top:4px">${escapeHtml(ids)}${r.uomRaw ? " · UOM " + escapeHtml(r.uomRaw) : ""}${r.already ? "<br><strong>Already imported from this order.</strong>" : ""}${r.qty === 0 ? "<br><strong>Shipped quantity 0 (backorder?).</strong>" : ""}</div>
+        <div class="split" style="grid-template-columns:1fr 1fr 1.3fr;margin-top:6px">
+          <input type="number" min="0" step="1" data-f="qty" value="${r.qty}" aria-label="Quantity">
+          <select data-f="unit" aria-label="Unit">${UNITS.map(u => `<option${u === r.unit ? " selected" : ""}>${u}</option>`).join("")}</select>
+          <select data-f="category" aria-label="Category">${CATEGORIES.map(c => `<option${c === r.category ? " selected" : ""}>${c}</option>`).join("")}</select>
+        </div>
+      </div>
+    </div>`;
+  }).join("") : `<div class="empty">No supply lines found.</div>`;
+  document.getElementById("impSkipCard").classList.toggle("hidden", !skipped.length);
+  document.getElementById("impSkipped").innerHTML = skipped.map(r =>
+    `<div>• ${escapeHtml(shortName(r.desc) || r.mck)}${r.mck ? " (McK #" + escapeHtml(r.mck) + ")" : ""}: ${escapeHtml(r.skip)}</div>`).join("");
+}
+function onImpEdit(e) {
+  const row = e.target.closest("[data-i]");
+  if (!row) return;
+  const r = importRows[Number(row.dataset.i)];
+  const f = e.target.dataset.f;
+  if (f === "checked") r.checked = e.target.checked;
+  else if (f === "qty") r.qty = Math.max(0, Math.round(Number(e.target.value) || 0));
+  else if (f) r[f] = e.target.value;
+}
+document.getElementById("impRows").addEventListener("input", onImpEdit);
+document.getElementById("impRows").addEventListener("change", onImpEdit);
+function addImported() {
+  const pick = importRows.filter(r => !r.skip && r.checked && r.qty > 0 && String(r.name).trim());
+  pick.forEach(r => {
+    const name = String(r.name).trim();
+    const notes = [r.mfrName, r.mfrNo && "Mfr #" + r.mfrNo, r.date && "Ordered " + r.date].filter(Boolean).join(" · ");
+    const existing = state.items.find(i => i.needsScan && r.mck && i.mckesson === r.mck);
+    if (existing) existing.qty = Number(existing.qty) + r.qty;
+    else state.items.push({
+      id: uid(), added: todayISO(), name, category: r.category, qty: r.qty, unit: r.unit,
+      lot: "", expires: "", barcode: r.upc || "", notes, needsScan: true,
+      ...(r.mck ? { mckesson: r.mck } : {}), ...(r.mfrNo ? { mfrNo: r.mfrNo } : {}),
+      ...(r.mfrName ? { mfrName: r.mfrName } : {}), ...(r.upc ? { upc: r.upc } : {})
+    });
+    const memo = { name, category: r.category, unit: r.unit };
+    if (r.mck) state.mck[r.mck] = Object.assign({}, state.mck[r.mck], memo, r.upc ? { gtin: codeKey(r.upc) } : {});
+    if (r.upc) state.catalog[codeKey(r.upc)] = Object.assign({}, state.catalog[codeKey(r.upc)], memo, r.mck ? { mck: r.mck } : {});
+    if (!state.imported.includes(r.key)) state.imported.push(r.key);
+  });
+  importRows = [];
+  save();
+  document.getElementById("filterStatus").value = pick.length ? "needs" : "all";
+  render();
+  show("list");
+  return pick.length;
+}
+document.getElementById("importMckBtn").addEventListener("click", () => document.getElementById("importMck").click());
+document.getElementById("importMck").addEventListener("change", async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    importRows = await readMckessonFile(file);
+    renderImport();
+    show("import");
+    window.scrollTo(0, 0);
+  } catch (err) {
+    alert("Couldn't read that file as a McKesson order. " + (err && err.message ? err.message : ""));
+  }
+});
+document.getElementById("impAdd").addEventListener("click", addImported);
+document.getElementById("impCancel").addEventListener("click", () => { importRows = []; show("add"); });
+document.getElementById("needsCount").addEventListener("click", () => {
+  document.getElementById("filterStatus").value = "needs";
+  show("list");
+  render();
+});
+document.getElementById("linkPick").addEventListener("change", e => {
+  if (!e.target.value) return;
+  setLinking(e.target.value);
+  const f = formEls();
+  document.getElementById("scanStatus").textContent += " Linked to " + f.name.value + "; next time this code fills in automatically.";
 });
 fillSelect(document.getElementById("category"), CATEGORIES, CATEGORIES[0]);
 fillSelect(document.getElementById("filterCat"), ["All categories", ...CATEGORIES], "All categories");
